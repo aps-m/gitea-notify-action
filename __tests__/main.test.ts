@@ -17,7 +17,13 @@ describe('action', () => {
       to: 'https://git.example.com/team/app/issues/1'
     }
     // Exercise the toolkit's real required-input and whitespace handling.
-    for (const name of ['token', 'to', 'message', 'message_file']) {
+    for (const name of [
+      'token',
+      'to',
+      'changelog',
+      'message',
+      'message_file'
+    ]) {
       delete process.env[`INPUT_${name.toUpperCase()}`]
     }
     jest.spyOn(core, 'setSecret').mockImplementation()
@@ -33,7 +39,13 @@ describe('action', () => {
 
   afterEach(async () => {
     await rm(directory, { recursive: true, force: true })
-    for (const name of ['token', 'to', 'message', 'message_file']) {
+    for (const name of [
+      'token',
+      'to',
+      'changelog',
+      'message',
+      'message_file'
+    ]) {
       delete process.env[`INPUT_${name.toUpperCase()}`]
     }
   })
@@ -106,7 +118,7 @@ describe('action', () => {
     expect(core.setFailed).toHaveBeenCalledTimes(1)
   })
 
-  it.each(['token', 'to'])('requires %s', async name => {
+  it.each(['token'])('requires %s', async name => {
     delete inputs[name]
     inputs.message = 'Text'
     await execute()
@@ -114,6 +126,96 @@ describe('action', () => {
       `Input required and not supplied: ${name}`
     )
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('requires a destination or changelog', async () => {
+    delete inputs.to
+    inputs.changelog = ' \n '
+    inputs.message = 'Text'
+    await execute()
+    expect(core.setFailed).toHaveBeenCalledWith(
+      'Provide an issue URL in "to" or text in "changelog".'
+    )
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('sends file then inline message to every unique changelog issue without to', async () => {
+    delete inputs.to
+    inputs.changelog = `
+- [First](https://git.example.com/team/app/issues/1)
+- [Second](https://git.example.com/team/other/issues/2)
+- https://git.example.com/team/app/issues/1#issuecomment-5
+`
+    inputs.message_file = join(directory, 'release.md')
+    await writeFile(inputs.message_file, 'Файл 🚀\n')
+    inputs.message = ' Выпущено!\n '
+    let id = 0
+    fetchMock.mockImplementation(async () => {
+      id += 1
+      return Response.json({ id, html_url: `https://git.example.com/#${id}` })
+    })
+    await execute()
+    expect(fetchMock.mock.calls.map(call => call[0])).toEqual([
+      'https://git.example.com/api/v1/repos/team/app/issues/1/comments',
+      'https://git.example.com/api/v1/repos/team/app/issues/1/comments',
+      'https://git.example.com/api/v1/repos/team/other/issues/2/comments',
+      'https://git.example.com/api/v1/repos/team/other/issues/2/comments'
+    ])
+    expect(
+      fetchMock.mock.calls.map(call => JSON.parse(String(call[1]?.body)).body)
+    ).toEqual(['Файл 🚀\n', inputs.message, 'Файл 🚀\n', inputs.message])
+    expect(core.setOutput).toHaveBeenCalledWith('comment_ids', '[1,2,3,4]')
+    expect(core.setOutput).toHaveBeenCalledWith('comment_count', 4)
+    expect(core.setFailed).not.toHaveBeenCalled()
+  })
+
+  it('combines to and changelog without duplicating the explicit issue', async () => {
+    inputs.changelog = `${inputs.to}/?view=all#comment-1\nhttps://git.example.com/team/app/issues/2`
+    inputs.message = 'Text'
+    await execute()
+    expect(fetchMock.mock.calls.map(call => call[0])).toEqual([
+      'https://git.example.com/api/v1/repos/team/app/issues/1/comments',
+      'https://git.example.com/api/v1/repos/team/app/issues/2/comments'
+    ])
+    expect(core.setFailed).not.toHaveBeenCalled()
+  })
+
+  it('succeeds with zero outputs when changelog has no issue links', async () => {
+    delete inputs.to
+    inputs.changelog = '## Release\n- Documentation updates (#42)'
+    inputs.message = 'Text'
+    await execute()
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(core.setFailed).not.toHaveBeenCalled()
+    expect(jest.mocked(core.setOutput).mock.calls).toEqual([
+      ['comment_ids', '[]'],
+      ['comment_urls', '[]'],
+      ['comment_count', 0]
+    ])
+    expect(core.info).toHaveBeenCalledWith(
+      expect.stringContaining('nothing to send')
+    )
+  })
+
+  it('retains results and stops sending when a later issue fails', async () => {
+    delete inputs.to
+    inputs.changelog = [1, 2, 3]
+      .map(id => `https://git.example.com/team/app/issues/${id}`)
+      .join('\n')
+    inputs.message = 'Text'
+    fetchMock
+      .mockResolvedValueOnce(Response.json({ id: 10, html_url: firstUrl }))
+      .mockResolvedValueOnce(new Response('Forbidden', { status: 403 }))
+    await execute()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(core.setFailed).toHaveBeenCalledWith(
+      expect.stringContaining('HTTP 403')
+    )
+    expect(jest.mocked(core.setOutput).mock.calls.slice(-3)).toEqual([
+      ['comment_ids', '[10]'],
+      ['comment_urls', JSON.stringify([firstUrl])],
+      ['comment_count', 1]
+    ])
   })
 
   it('validates the destination before sending', async () => {

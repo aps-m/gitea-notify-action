@@ -31671,6 +31671,35 @@ module.exports = {
 
 /***/ }),
 
+/***/ 8598:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.changelogDestinations = void 0;
+const gitea_1 = __nccwpck_require__(2834);
+/** Extract full issue links from Markdown or plain text in first-seen order. */
+function changelogDestinations(changelog) {
+    const destinations = new Set();
+    const links = changelog.match(/https?:\/\/[^\s<>"'`[\]()]+/gi) ?? [];
+    for (const link of links) {
+        // Sentence punctuation is not part of a bare issue link.
+        const issueUrl = link.replace(/[.,;:!?]+$/, '');
+        try {
+            destinations.add((0, gitea_1.commentsUrl)(issueUrl));
+        }
+        catch {
+            // Changelogs can also contain commit, comparison and other non-issue links.
+        }
+    }
+    return [...destinations];
+}
+exports.changelogDestinations = changelogDestinations;
+
+
+/***/ }),
+
 /***/ 2834:
 /***/ ((__unused_webpack_module, exports) => {
 
@@ -31789,6 +31818,7 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.run = void 0;
 const core = __importStar(__nccwpck_require__(2186));
 const promises_1 = __nccwpck_require__(3977);
+const changelog_1 = __nccwpck_require__(8598);
 const gitea_1 = __nccwpck_require__(2834);
 async function run() {
     const ids = [];
@@ -31801,7 +31831,15 @@ async function run() {
     try {
         const token = core.getInput('token', { required: true });
         core.setSecret(token);
-        const apiUrl = (0, gitea_1.commentsUrl)(core.getInput('to', { required: true }));
+        const to = core.getInput('to');
+        const changelog = core.getInput('changelog', { trimWhitespace: false });
+        if (!to && !changelog.trim()) {
+            throw new Error('Provide an issue URL in "to" or text in "changelog".');
+        }
+        const destinations = new Set([
+            ...(to ? [(0, gitea_1.commentsUrl)(to)] : []),
+            ...(0, changelog_1.changelogDestinations)(changelog)
+        ]);
         const message = core.getInput('message', { trimWhitespace: false });
         const messageFile = core.getInput('message_file');
         // Read and validate all local input before publishing anything.
@@ -31814,12 +31852,17 @@ async function run() {
             throw new Error('Provide non-empty text in "message" or "message_file".');
         }
         updateOutputs();
-        for (const text of nonEmptyMessages) {
-            const comment = await (0, gitea_1.createComment)(apiUrl, token, text);
-            ids.push(comment.id);
-            urls.push(comment.html_url);
-            updateOutputs();
-            core.info(`Created Gitea comment ${comment.id}.`);
+        if (destinations.size === 0) {
+            core.info('No HTTPS Gitea issue links found in changelog; nothing to send.');
+        }
+        for (const apiUrl of destinations) {
+            for (const text of nonEmptyMessages) {
+                const comment = await (0, gitea_1.createComment)(apiUrl, token, text);
+                ids.push(comment.id);
+                urls.push(comment.html_url);
+                updateOutputs();
+                core.info(`Created Gitea comment ${comment.id}.`);
+            }
         }
     }
     catch (error) {

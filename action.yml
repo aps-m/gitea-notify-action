@@ -1,5 +1,6 @@
 name: 'Gitea issue notify action'
-description: 'Send notification comments to an existing Gitea issue'
+description:
+  'Send notification comments to Gitea issues, including links from a changelog'
 author: 'APS'
 
 branding:
@@ -11,8 +12,15 @@ inputs:
     description: 'Gitea access token with permission to comment on the issue'
     required: true
   to:
-    description: 'HTTPS issue URL: https://host/owner/repo/issues/42'
-    required: true
+    description:
+      'HTTPS issue URL: https://host/owner/repo/issues/42; optional when
+      changelog is provided'
+    required: false
+  changelog:
+    description:
+      'Processed changelog text; each unique HTTPS issue link receives the
+      messages (in addition to to)'
+    required: false
   message:
     description: 'Comment text (Gitea Markdown)'
     required: false
