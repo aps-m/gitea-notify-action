@@ -27,7 +27,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Send notification
         id: notify
-        uses: ./
+        uses: aps-m/gitea-notify-action@master
         with:
           token: ${{ secrets.GITEA_TOKEN }}
           to: ${{ vars.GITEA_ISSUE_URL }}
@@ -65,7 +65,7 @@ runner должен поддерживать `runs.using: node24`.
 
 ```yaml
 - name: Send changelog
-  uses: ./
+  uses: aps-m/gitea-notify-action@master
   with:
     token: ${{ secrets.GITEA_TOKEN }}
     to: https://git.example.com/gitea/team/project/issues/42
