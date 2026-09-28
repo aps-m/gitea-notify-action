@@ -1,0 +1,33 @@
+name: 'Gitea issue notify action'
+description: 'Send notification comments to an existing Gitea issue'
+author: 'APS'
+
+branding:
+  icon: 'message-square'
+  color: 'green'
+
+inputs:
+  token:
+    description: 'Gitea access token with permission to comment on the issue'
+    required: true
+  to:
+    description: 'HTTPS issue URL: https://host/owner/repo/issues/42'
+    required: true
+  message:
+    description: 'Comment text (Gitea Markdown)'
+    required: false
+  message_file:
+    description: 'UTF-8 file containing comment text; sent before message'
+    required: false
+
+outputs:
+  comment_ids:
+    description: 'JSON array of successfully created comment IDs'
+  comment_urls:
+    description: 'JSON array of successfully created comment URLs'
+  comment_count:
+    description: 'Number of successfully created comments'
+
+runs:
+  using: node24
+  main: dist/index.js

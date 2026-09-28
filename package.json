@@ -1,0 +1,56 @@
+{
+  "name": "gitea-notify-action",
+  "description": "GitHub Action for sending notification comments to Gitea issues",
+  "version": "1.0.0",
+  "author": "APS",
+  "private": true,
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src __tests__ --ext .ts",
+    "format:write": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "jest --runInBand",
+    "ci-test": "jest --runInBand --coverage",
+    "package": "ncc build src/index.ts -o dist --source-map --license licenses.txt",
+    "bundle": "npm run format:write && npm run package",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run ci-test",
+    "all": "npm run check && npm run package"
+  },
+  "dependencies": {
+    "@actions/core": "^2.0.3"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.12",
+    "@types/node": "^20.11.28",
+    "@typescript-eslint/eslint-plugin": "^7.2.0",
+    "@typescript-eslint/parser": "^7.2.0",
+    "@vercel/ncc": "^0.38.1",
+    "eslint": "^8.57.0",
+    "jest": "^29.7.0",
+    "prettier": "^3.2.5",
+    "ts-jest": "^29.1.2",
+    "typescript": "^5.4.2"
+  },
+  "jest": {
+    "preset": "ts-jest",
+    "testEnvironment": "node",
+    "clearMocks": true,
+    "restoreMocks": true,
+    "roots": [
+      "<rootDir>/__tests__"
+    ],
+    "testMatch": [
+      "**/*.test.ts"
+    ],
+    "collectCoverageFrom": [
+      "src/**/*.ts"
+    ],
+    "coverageReporters": [
+      "text",
+      "lcov"
+    ]
+  }
+}
