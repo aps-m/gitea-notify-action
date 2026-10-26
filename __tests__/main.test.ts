@@ -30,6 +30,7 @@ describe('action', () => {
     jest.spyOn(core, 'setOutput').mockImplementation()
     jest.spyOn(core, 'setFailed').mockImplementation()
     jest.spyOn(core, 'info').mockImplementation()
+    jest.spyOn(core, 'warning').mockImplementation()
     fetchMock = jest
       .spyOn(globalThis, 'fetch')
       .mockImplementation(async () =>
@@ -38,6 +39,7 @@ describe('action', () => {
   })
 
   afterEach(async () => {
+    jest.useRealTimers()
     await rm(directory, { recursive: true, force: true })
     for (const name of [
       'token',
@@ -258,10 +260,39 @@ describe('action', () => {
   })
 
   it('reports thrown values even when they are not Error objects', async () => {
+    jest.useFakeTimers()
     inputs.message = 'Text'
     fetchMock.mockRejectedValue('network unavailable')
-    await execute()
-    expect(core.setFailed).toHaveBeenCalledWith('network unavailable')
+    const result = execute()
+    await jest.advanceTimersByTimeAsync(20_000)
+    await result
+    expect(fetchMock).toHaveBeenCalledTimes(5)
+    expect(core.setFailed).toHaveBeenCalledWith(
+      'network unavailable (failed after 5 attempts).'
+    )
     expect(core.setOutput).toHaveBeenCalledWith('comment_count', 0)
+  })
+
+  it('retries only the failed issue and counts each confirmed comment once', async () => {
+    jest.useFakeTimers()
+    inputs.changelog = 'https://git.example.com/team/app/issues/2'
+    inputs.message = 'Text'
+    fetchMock
+      .mockResolvedValueOnce(Response.json({ id: 10, html_url: firstUrl }))
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockResolvedValueOnce(
+        Response.json({ id: 11, html_url: 'https://git.example.com/#11' })
+      )
+    const result = execute()
+    await jest.advanceTimersByTimeAsync(5_000)
+    await result
+    expect(fetchMock.mock.calls.map(call => call[0])).toEqual([
+      'https://git.example.com/api/v1/repos/team/app/issues/1/comments',
+      'https://git.example.com/api/v1/repos/team/app/issues/2/comments',
+      'https://git.example.com/api/v1/repos/team/app/issues/2/comments'
+    ])
+    expect(core.setOutput).toHaveBeenCalledWith('comment_ids', '[10,11]')
+    expect(core.setOutput).toHaveBeenCalledWith('comment_count', 2)
+    expect(core.setFailed).not.toHaveBeenCalled()
   })
 })

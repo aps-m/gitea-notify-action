@@ -31701,12 +31701,36 @@ exports.changelogDestinations = changelogDestinations;
 /***/ }),
 
 /***/ 2834:
-/***/ ((__unused_webpack_module, exports) => {
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
 "use strict";
 
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || function (mod) {
+    if (mod && mod.__esModule) return mod;
+    var result = {};
+    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
+    __setModuleDefault(result, mod);
+    return result;
+};
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.createComment = exports.commentsUrl = void 0;
+const core = __importStar(__nccwpck_require__(2186));
 /** Convert the browser issue URL to the API endpoint, preserving a subpath. */
 function commentsUrl(issueUrl) {
     let url;
@@ -31731,9 +31755,31 @@ function commentsUrl(issueUrl) {
     return `${url.origin}${prefix}/api/v1/repos/${owner}/${repo}/issues/${index}/comments`;
 }
 exports.commentsUrl = commentsUrl;
-/** POST once: retrying an ambiguous network failure could duplicate a comment. */
+const MAX_ATTEMPTS = 5;
+const RETRY_DELAY_MS = 5_000;
+class RetryableError extends Error {
+}
+/** Retry transient failures; an ambiguous POST failure can duplicate a comment. */
 async function createComment(apiUrl, token, message) {
+    for (let attempt = 1;; attempt++) {
+        try {
+            return await createCommentAttempt(apiUrl, token, message);
+        }
+        catch (error) {
+            if (!(error instanceof RetryableError))
+                throw error;
+            if (attempt === MAX_ATTEMPTS) {
+                throw new Error(`${error.message} (failed after ${MAX_ATTEMPTS} attempts).`);
+            }
+            core.warning(`Gitea request attempt ${attempt}/${MAX_ATTEMPTS} failed; retrying in 5 seconds (attempt ${attempt + 1}/${MAX_ATTEMPTS}).`);
+            await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+        }
+    }
+}
+exports.createComment = createComment;
+async function createCommentAttempt(apiUrl, token, message) {
     const signal = AbortSignal.timeout(30_000);
+    let receivedResponse = false;
     try {
         const response = await fetch(apiUrl, {
             method: 'POST',
@@ -31746,13 +31792,20 @@ async function createComment(apiUrl, token, message) {
             redirect: 'manual',
             signal
         });
+        receivedResponse = true;
         if (!response.ok) {
             await response.body?.cancel();
             if (response.status >= 300 && response.status < 400) {
                 throw new Error(`Gitea returned HTTP ${response.status}. Redirects are disabled; use the final HTTPS issue URL.`);
             }
             // Do not print response bodies: a proxy/server may echo credentials or text.
-            throw new Error(`Gitea returned HTTP ${response.status}. Check the issue URL, token permissions and server availability.`);
+            const message = `Gitea returned HTTP ${response.status}. Check the issue URL, token permissions and server availability.`;
+            if (response.status === 408 ||
+                response.status === 429 ||
+                response.status >= 500) {
+                throw new RetryableError(message);
+            }
+            throw new Error(message);
         }
         let comment;
         try {
@@ -31776,12 +31829,14 @@ async function createComment(apiUrl, token, message) {
     }
     catch (error) {
         if (signal.aborted) {
-            throw new Error('Gitea request timed out after 30 seconds.');
+            throw new RetryableError('Gitea request timed out after 30 seconds.');
+        }
+        if (!receivedResponse) {
+            throw new RetryableError(error instanceof Error ? error.message : String(error));
         }
         throw error;
     }
 }
-exports.createComment = createComment;
 
 
 /***/ }),

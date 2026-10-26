@@ -1,3 +1,5 @@
+import * as core from '@actions/core'
+
 export interface Comment {
   id: number
   html_url: string
@@ -33,13 +35,42 @@ export function commentsUrl(issueUrl: string): string {
   return `${url.origin}${prefix}/api/v1/repos/${owner}/${repo}/issues/${index}/comments`
 }
 
-/** POST once: retrying an ambiguous network failure could duplicate a comment. */
+const MAX_ATTEMPTS = 5
+const RETRY_DELAY_MS = 5_000
+
+class RetryableError extends Error {}
+
+/** Retry transient failures; an ambiguous POST failure can duplicate a comment. */
 export async function createComment(
   apiUrl: string,
   token: string,
   message: string
 ): Promise<Comment> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await createCommentAttempt(apiUrl, token, message)
+    } catch (error) {
+      if (!(error instanceof RetryableError)) throw error
+      if (attempt === MAX_ATTEMPTS) {
+        throw new Error(
+          `${error.message} (failed after ${MAX_ATTEMPTS} attempts).`
+        )
+      }
+      core.warning(
+        `Gitea request attempt ${attempt}/${MAX_ATTEMPTS} failed; retrying in 5 seconds (attempt ${attempt + 1}/${MAX_ATTEMPTS}).`
+      )
+      await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS))
+    }
+  }
+}
+
+async function createCommentAttempt(
+  apiUrl: string,
+  token: string,
+  message: string
+): Promise<Comment> {
   const signal = AbortSignal.timeout(30_000)
+  let receivedResponse = false
   try {
     const response = await fetch(apiUrl, {
       method: 'POST',
@@ -52,6 +83,7 @@ export async function createComment(
       redirect: 'manual',
       signal
     })
+    receivedResponse = true
 
     if (!response.ok) {
       await response.body?.cancel()
@@ -61,9 +93,15 @@ export async function createComment(
         )
       }
       // Do not print response bodies: a proxy/server may echo credentials or text.
-      throw new Error(
-        `Gitea returned HTTP ${response.status}. Check the issue URL, token permissions and server availability.`
-      )
+      const message = `Gitea returned HTTP ${response.status}. Check the issue URL, token permissions and server availability.`
+      if (
+        response.status === 408 ||
+        response.status === 429 ||
+        response.status >= 500
+      ) {
+        throw new RetryableError(message)
+      }
+      throw new Error(message)
     }
 
     let comment: unknown
@@ -89,7 +127,12 @@ export async function createComment(
     return { id: comment.id, html_url: comment.html_url }
   } catch (error) {
     if (signal.aborted) {
-      throw new Error('Gitea request timed out after 30 seconds.')
+      throw new RetryableError('Gitea request timed out after 30 seconds.')
+    }
+    if (!receivedResponse) {
+      throw new RetryableError(
+        error instanceof Error ? error.message : String(error)
+      )
     }
     throw error
   }
