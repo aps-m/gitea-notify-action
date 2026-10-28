@@ -2,11 +2,14 @@ import * as core from '@actions/core'
 import { readFile } from 'node:fs/promises'
 import { changelogDestinations } from './changelog'
 import { commentsUrl, createComment } from './gitea'
+import { moveIssueToColumn } from './projects'
 
 export async function run(): Promise<void> {
   const ids: number[] = []
   const urls: string[] = []
+  let movedIssueCount = 0
   const updateOutputs = (): void => {
+    core.setOutput('moved_issue_count', movedIssueCount)
     core.setOutput('comment_ids', JSON.stringify(ids))
     core.setOutput('comment_urls', JSON.stringify(urls))
     core.setOutput('comment_count', ids.length)
@@ -26,6 +29,8 @@ export async function run(): Promise<void> {
     ])
     const message = core.getInput('message', { trimWhitespace: false })
     const messageFile = core.getInput('message_file')
+    const moveToColumn = core.getInput('move_to_column')
+    const projectName = core.getInput('project_name')
 
     // Read and validate all local input before publishing anything.
     const messages: string[] = []
@@ -49,6 +54,12 @@ export async function run(): Promise<void> {
         urls.push(comment.html_url)
         updateOutputs()
         core.info(`Created Gitea comment ${comment.id}.`)
+      }
+      if (moveToColumn) {
+        await moveIssueToColumn(apiUrl, token, moveToColumn, projectName)
+        movedIssueCount++
+        updateOutputs()
+        core.info(`Moved Gitea issue to column "${moveToColumn}".`)
       }
     }
   } catch (error) {

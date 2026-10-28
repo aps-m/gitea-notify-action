@@ -1,6 +1,7 @@
 name: 'Gitea issue notify action'
 description:
-  'Send notification comments to Gitea issues, including links from a changelog'
+  'Notify Gitea issues and move them to a project column, including links from a
+  changelog'
 author: 'APS'
 
 branding:
@@ -9,7 +10,8 @@ branding:
 
 inputs:
   token:
-    description: 'Gitea access token with permission to comment on the issue'
+    description:
+      'Gitea access token with issue comment and project write permissions'
     required: true
   to:
     description:
@@ -27,8 +29,21 @@ inputs:
   message_file:
     description: 'UTF-8 file containing comment text; sent before message'
     required: false
+  move_to_column:
+    description:
+      'Target column title; empty disables moving. Requires Gitea 28.0.0+'
+    required: false
+    default: 'Тестирование'
+  project_name:
+    description:
+      'Existing open repository project title; required if an issue has multiple
+      such projects'
+    required: false
 
 outputs:
+  moved_issue_count:
+    description:
+      'Number of issues successfully moved after their notification comments'
   comment_ids:
     description: 'JSON array of successfully created comment IDs'
   comment_urls:

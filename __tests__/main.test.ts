@@ -22,7 +22,9 @@ describe('action', () => {
       'to',
       'changelog',
       'message',
-      'message_file'
+      'message_file',
+      'move_to_column',
+      'project_name'
     ]) {
       delete process.env[`INPUT_${name.toUpperCase()}`]
     }
@@ -46,7 +48,9 @@ describe('action', () => {
       'to',
       'changelog',
       'message',
-      'message_file'
+      'message_file',
+      'move_to_column',
+      'project_name'
     ]) {
       delete process.env[`INPUT_${name.toUpperCase()}`]
     }
@@ -190,6 +194,7 @@ describe('action', () => {
     expect(fetchMock).not.toHaveBeenCalled()
     expect(core.setFailed).not.toHaveBeenCalled()
     expect(jest.mocked(core.setOutput).mock.calls).toEqual([
+      ['moved_issue_count', 0],
       ['comment_ids', '[]'],
       ['comment_urls', '[]'],
       ['comment_count', 0]
@@ -228,6 +233,65 @@ describe('action', () => {
       expect.stringContaining('HTTPS')
     )
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('moves each unique issue once after both comments and preserves partial outputs', async () => {
+    inputs.changelog = `${inputs.to}\nhttps://git.example.com/team/app/issues/2`
+    inputs.message_file = join(directory, 'release.md')
+    await writeFile(inputs.message_file, 'Release notes')
+    inputs.message = 'Ready for testing'
+    inputs.move_to_column = 'Тестирование'
+    inputs.project_name = 'Release'
+    fetchMock.mockImplementation(async (url, options) => {
+      const path = String(url)
+      if (path.endsWith('/comments'))
+        return Response.json({ id: 10, html_url: firstUrl })
+      if (/\/issues\/[12]$/.test(path))
+        return Response.json({
+          id: path.endsWith('/1') ? 101 : 102,
+          projects: [
+            { id: 7, title: 'Release', type: 'repository', state: 'open' },
+            { id: 8, title: 'Other', type: 'repository', state: 'open' }
+          ]
+        })
+      if (path.endsWith('/columns?limit=50&page=1'))
+        return Response.json([{ id: 9, title: 'Тестирование' }])
+      if (path.endsWith('/columns?limit=50&page=2')) return Response.json([])
+      if (path.endsWith('/issues/101/move'))
+        return new Response(null, { status: 204 })
+      if (path.endsWith('/issues/102/move'))
+        return new Response(null, { status: 403 })
+      throw new Error(`Unexpected ${options?.method} request: ${path}`)
+    })
+    await execute()
+    const calls = fetchMock.mock.calls
+    expect(
+      calls.slice(0, 3).map(call => String(call[0]).split('/').pop())
+    ).toEqual(['comments', 'comments', '1'])
+    const moves = calls.filter(call => String(call[0]).endsWith('/move'))
+    expect(moves).toHaveLength(2)
+    expect(moves[0][0]).toContain('/projects/7/issues/101/move')
+    expect(JSON.parse(String(moves[0][1]?.body))).toEqual({ column_id: 9 })
+    expect(core.setOutput).toHaveBeenLastCalledWith('comment_count', 4)
+    expect(
+      jest
+        .mocked(core.setOutput)
+        .mock.calls.filter(call => call[0] === 'moved_issue_count')
+        .at(-1)
+    ).toEqual(['moved_issue_count', 1])
+    expect(core.setFailed).toHaveBeenCalledWith(
+      expect.stringContaining('HTTP 403')
+    )
+  })
+
+  it('does not move an issue if its notification fails', async () => {
+    inputs.message = 'Ready'
+    inputs.move_to_column = 'Тестирование'
+    fetchMock.mockResolvedValue(new Response(null, { status: 403 }))
+    await execute()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(String(fetchMock.mock.calls[0][0])).toMatch(/\/comments$/)
+    expect(core.setOutput).toHaveBeenCalledWith('moved_issue_count', 0)
   })
 
   it('fails before sending if the message file cannot be read', async () => {

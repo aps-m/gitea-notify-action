@@ -31729,7 +31729,7 @@ var __importStar = (this && this.__importStar) || function (mod) {
     return result;
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.createComment = exports.commentsUrl = void 0;
+exports.giteaRequest = exports.createComment = exports.commentsUrl = void 0;
 const core = __importStar(__nccwpck_require__(2186));
 /** Convert the browser issue URL to the API endpoint, preserving a subpath. */
 function commentsUrl(issueUrl) {
@@ -31761,9 +31761,28 @@ class RetryableError extends Error {
 }
 /** Retry transient failures; an ambiguous POST failure can duplicate a comment. */
 async function createComment(apiUrl, token, message) {
+    const comment = await giteaRequest(apiUrl, token, {
+        method: 'POST',
+        body: { body: message }
+    });
+    if (typeof comment !== 'object' ||
+        comment === null ||
+        !('id' in comment) ||
+        typeof comment.id !== 'number' ||
+        !Number.isSafeInteger(comment.id) ||
+        comment.id <= 0 ||
+        !('html_url' in comment) ||
+        typeof comment.html_url !== 'string' ||
+        comment.html_url.trim() === '') {
+        throw new Error('Gitea returned an invalid comment response.');
+    }
+    return { id: comment.id, html_url: comment.html_url };
+}
+exports.createComment = createComment;
+async function giteaRequest(apiUrl, token, options) {
     for (let attempt = 1;; attempt++) {
         try {
-            return await createCommentAttempt(apiUrl, token, message);
+            return await requestAttempt(apiUrl, token, options);
         }
         catch (error) {
             if (!(error instanceof RetryableError))
@@ -31776,19 +31795,19 @@ async function createComment(apiUrl, token, message) {
         }
     }
 }
-exports.createComment = createComment;
-async function createCommentAttempt(apiUrl, token, message) {
+exports.giteaRequest = giteaRequest;
+async function requestAttempt(apiUrl, token, options) {
     const signal = AbortSignal.timeout(30_000);
     let receivedResponse = false;
     try {
         const response = await fetch(apiUrl, {
-            method: 'POST',
+            method: options.method,
             headers: {
                 Authorization: `token ${token}`,
                 Accept: 'application/json',
                 'Content-Type': 'application/json; charset=utf-8'
             },
-            body: JSON.stringify({ body: message }),
+            body: options.body === undefined ? undefined : JSON.stringify(options.body),
             redirect: 'manual',
             signal
         });
@@ -31807,25 +31826,19 @@ async function createCommentAttempt(apiUrl, token, message) {
             }
             throw new Error(message);
         }
-        let comment;
+        if (options.emptyResponse) {
+            await response.body?.cancel();
+            if (response.status !== 204) {
+                throw new Error(`Gitea returned HTTP ${response.status}; expected 204 for issue move.`);
+            }
+            return undefined;
+        }
         try {
-            comment = await response.json();
+            return await response.json();
         }
         catch {
             throw new Error('Gitea returned an invalid JSON response.');
         }
-        if (typeof comment !== 'object' ||
-            comment === null ||
-            !('id' in comment) ||
-            typeof comment.id !== 'number' ||
-            !Number.isSafeInteger(comment.id) ||
-            comment.id <= 0 ||
-            !('html_url' in comment) ||
-            typeof comment.html_url !== 'string' ||
-            comment.html_url.trim() === '') {
-            throw new Error('Gitea returned an invalid comment response.');
-        }
-        return { id: comment.id, html_url: comment.html_url };
     }
     catch (error) {
         if (signal.aborted) {
@@ -31875,10 +31888,13 @@ const core = __importStar(__nccwpck_require__(2186));
 const promises_1 = __nccwpck_require__(3977);
 const changelog_1 = __nccwpck_require__(8598);
 const gitea_1 = __nccwpck_require__(2834);
+const projects_1 = __nccwpck_require__(5827);
 async function run() {
     const ids = [];
     const urls = [];
+    let movedIssueCount = 0;
     const updateOutputs = () => {
+        core.setOutput('moved_issue_count', movedIssueCount);
         core.setOutput('comment_ids', JSON.stringify(ids));
         core.setOutput('comment_urls', JSON.stringify(urls));
         core.setOutput('comment_count', ids.length);
@@ -31897,6 +31913,8 @@ async function run() {
         ]);
         const message = core.getInput('message', { trimWhitespace: false });
         const messageFile = core.getInput('message_file');
+        const moveToColumn = core.getInput('move_to_column');
+        const projectName = core.getInput('project_name');
         // Read and validate all local input before publishing anything.
         const messages = [];
         if (messageFile)
@@ -31918,6 +31936,12 @@ async function run() {
                 updateOutputs();
                 core.info(`Created Gitea comment ${comment.id}.`);
             }
+            if (moveToColumn) {
+                await (0, projects_1.moveIssueToColumn)(apiUrl, token, moveToColumn, projectName);
+                movedIssueCount++;
+                updateOutputs();
+                core.info(`Moved Gitea issue to column "${moveToColumn}".`);
+            }
         }
     }
     catch (error) {
@@ -31925,6 +31949,95 @@ async function run() {
     }
 }
 exports.run = run;
+
+
+/***/ }),
+
+/***/ 5827:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.moveIssueToColumn = void 0;
+const gitea_1 = __nccwpck_require__(2834);
+function hasId(value) {
+    return (typeof value === 'object' &&
+        value !== null &&
+        'id' in value &&
+        typeof value.id === 'number' &&
+        Number.isSafeInteger(value.id) &&
+        value.id > 0);
+}
+function isProject(value) {
+    return (hasId(value) &&
+        'title' in value &&
+        typeof value.title === 'string' &&
+        'type' in value &&
+        typeof value.type === 'string' &&
+        'state' in value &&
+        typeof value.state === 'string');
+}
+async function listColumns(apiUrl, token) {
+    const columns = [];
+    const seen = new Set();
+    for (let page = 1; page <= 100; page++) {
+        const items = await (0, gitea_1.giteaRequest)(`${apiUrl}?limit=50&page=${page}`, token, {
+            method: 'GET'
+        });
+        if (!Array.isArray(items))
+            throw new Error('Gitea returned an invalid column list.');
+        if (items.length === 0)
+            return columns;
+        for (const item of items) {
+            if (!hasId(item) ||
+                !('title' in item) ||
+                typeof item.title !== 'string') {
+                throw new Error('Gitea returned an invalid project column.');
+            }
+            if (seen.has(item.id))
+                throw new Error('Gitea repeated a column page; stopped pagination.');
+            seen.add(item.id);
+            columns.push({ id: item.id, title: item.title });
+        }
+    }
+    throw new Error('Gitea column pagination exceeded 100 pages.');
+}
+/** Move within an existing repository project; never attach to another project. */
+async function moveIssueToColumn(commentsApiUrl, token, columnTitle, projectTitle) {
+    // The caller supplies the canonical endpoint produced by commentsUrl().
+    const match = commentsApiUrl.match(/^(.*)\/issues\/([1-9]\d*)\/comments$/);
+    if (!match)
+        throw new Error('Invalid issue comments API URL.');
+    const [, repoApi, index] = match;
+    const issue = await (0, gitea_1.giteaRequest)(`${repoApi}/issues/${index}`, token, {
+        method: 'GET'
+    });
+    if (!hasId(issue) ||
+        !('projects' in issue) ||
+        (issue.projects !== null &&
+            (!Array.isArray(issue.projects) || !issue.projects.every(isProject)))) {
+        throw new Error('Gitea returned invalid issue/project data. Moving issues requires Gitea 28.0.0 or newer.');
+    }
+    const projects = (issue.projects ?? []).filter(project => project.type === 'repository' &&
+        project.state === 'open' &&
+        (!projectTitle || project.title === projectTitle));
+    if (projects.length !== 1) {
+        throw new Error(`Issue #${index}: expected one matching open repository project, found ${projects.length}. Check project membership or set "project_name".`);
+    }
+    const projectApi = `${repoApi}/projects/${projects[0].id}`;
+    const columns = (await listColumns(`${projectApi}/columns`, token)).filter(column => column.title === columnTitle);
+    if (columns.length !== 1) {
+        throw new Error(`Issue #${index}: expected one column named "${columnTitle}", found ${columns.length}.`);
+    }
+    // Issue numbers in web URLs differ from the global IDs required by this API.
+    await (0, gitea_1.giteaRequest)(`${projectApi}/issues/${issue.id}/move`, token, {
+        method: 'POST',
+        body: { column_id: columns[0].id },
+        emptyResponse: true
+    });
+}
+exports.moveIssueToColumn = moveIssueToColumn;
 
 
 /***/ }),

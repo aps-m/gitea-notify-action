@@ -46,9 +46,40 @@ export async function createComment(
   token: string,
   message: string
 ): Promise<Comment> {
+  const comment = await giteaRequest(apiUrl, token, {
+    method: 'POST',
+    body: { body: message }
+  })
+  if (
+    typeof comment !== 'object' ||
+    comment === null ||
+    !('id' in comment) ||
+    typeof comment.id !== 'number' ||
+    !Number.isSafeInteger(comment.id) ||
+    comment.id <= 0 ||
+    !('html_url' in comment) ||
+    typeof comment.html_url !== 'string' ||
+    comment.html_url.trim() === ''
+  ) {
+    throw new Error('Gitea returned an invalid comment response.')
+  }
+  return { id: comment.id, html_url: comment.html_url }
+}
+
+interface RequestOptions {
+  method: 'GET' | 'POST'
+  body?: unknown
+  emptyResponse?: boolean
+}
+
+export async function giteaRequest(
+  apiUrl: string,
+  token: string,
+  options: RequestOptions
+): Promise<unknown> {
   for (let attempt = 1; ; attempt++) {
     try {
-      return await createCommentAttempt(apiUrl, token, message)
+      return await requestAttempt(apiUrl, token, options)
     } catch (error) {
       if (!(error instanceof RetryableError)) throw error
       if (attempt === MAX_ATTEMPTS) {
@@ -64,22 +95,23 @@ export async function createComment(
   }
 }
 
-async function createCommentAttempt(
+async function requestAttempt(
   apiUrl: string,
   token: string,
-  message: string
-): Promise<Comment> {
+  options: RequestOptions
+): Promise<unknown> {
   const signal = AbortSignal.timeout(30_000)
   let receivedResponse = false
   try {
     const response = await fetch(apiUrl, {
-      method: 'POST',
+      method: options.method,
       headers: {
         Authorization: `token ${token}`,
         Accept: 'application/json',
         'Content-Type': 'application/json; charset=utf-8'
       },
-      body: JSON.stringify({ body: message }),
+      body:
+        options.body === undefined ? undefined : JSON.stringify(options.body),
       redirect: 'manual',
       signal
     })
@@ -104,27 +136,20 @@ async function createCommentAttempt(
       throw new Error(message)
     }
 
-    let comment: unknown
+    if (options.emptyResponse) {
+      await response.body?.cancel()
+      if (response.status !== 204) {
+        throw new Error(
+          `Gitea returned HTTP ${response.status}; expected 204 for issue move.`
+        )
+      }
+      return undefined
+    }
     try {
-      comment = await response.json()
+      return await response.json()
     } catch {
       throw new Error('Gitea returned an invalid JSON response.')
     }
-    if (
-      typeof comment !== 'object' ||
-      comment === null ||
-      !('id' in comment) ||
-      typeof comment.id !== 'number' ||
-      !Number.isSafeInteger(comment.id) ||
-      comment.id <= 0 ||
-      !('html_url' in comment) ||
-      typeof comment.html_url !== 'string' ||
-      comment.html_url.trim() === ''
-    ) {
-      throw new Error('Gitea returned an invalid comment response.')
-    }
-
-    return { id: comment.id, html_url: comment.html_url }
   } catch (error) {
     if (signal.aborted) {
       throw new RetryableError('Gitea request timed out after 30 seconds.')
